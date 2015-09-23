@@ -1,4 +1,3 @@
-hooks = require 'hooks'
 net = require 'net'
 EventEmitter = require('events').EventEmitter
 
@@ -6,290 +5,438 @@ child_process = require('child_process')
 spawn = child_process.spawn
 
 # for stubbing in tests
-console = require 'console'
+logger = require './logger'
 
 which = require './which'
 
 HOOK_TIMEOUT = 5000
+
+CONNECT_TIMEOUT = 1000
+CONNECT_RETRY = 500
+
+TERM_TIMEOUT = 5000
+TERM_RETRY = 500
+
 HANDLER_HOST = 'localhost'
 HANDLER_PORT = 61321
 HANDLER_MESSAGE_DELIMITER = "\n"
 
 
-emitter = new EventEmitter
+class HooksWorkerClient
+  constructor: (@hooks) ->
+    @emitter = new EventEmitter
+    @language = @hooks?.configuration?.options?.language
+    @clientConnected = false
+    @handlerEnded = false
+    @connectError = false
 
-language = hooks?.configuration?.options?.language
+  start: (callback) ->
+    console.log 1
+    @setCommandAndcheckForExecutables (executablesError) =>
+      return callback(executablesError) if executablesError
 
-# Select handler based on option, use option string as command if not match anything
-if language == 'ruby'
-  handlerCommand = 'dredd-hooks-ruby'
-  unless which.which handlerCommand
-    console.log "Ruby hooks handler server command not found: #{handlerCommand}"
-    console.log "Install ruby hooks handler by running:"
-    console.log "$ gem install dredd_hooks"
-    hooks.processExit 1
+      console.log 2
 
-else if language == 'python'
-  handlerCommand = 'dredd-hooks-python'
-  unless which.which handlerCommand
-    console.log "Python hooks handler server command not found: #{handlerCommand}"
-    console.log "Install python hooks handler by running:"
-    console.log "$ pip install dredd_hooks"
-    hooks.processExit 1
+      @spawnHandler (spawnHandlerError) =>
+        return callback(spawnHandlerError) if spawnHandlerError
 
-else if language == 'nodejs'
-  throw new Error 'Hooks handler should not be used for nodejs. Use Dredds\' native node hooks instead'
-else
-  handlerCommand = language
-  unless which.which handlerCommand
-    console.log "Hooks handler server command not found: #{handlerCommand}"
-    hooks.processExit 1
+        console.log 3
+        # Wait before connecting to a handler
 
+        @connectToHandler (connectHandlerError) =>
+          return callback(connectHandlerError) if connectHandlerError
 
+          console.log 4
+          # Wait before starting a test
 
-pathGlobs = [].concat hooks?.configuration?.options?.hookfiles
+          @registerHooks (registerHooksError) =>
+            return callback(registerHooksError) if registerHooksError
 
-handler = spawn handlerCommand, pathGlobs
+            console.log 5
+            callback()
 
-console.log "Spawning `#{language}` hooks handler"
+  stop: (callback) ->
+    @disconnectFromHandler()
+    @terminateHandler () ->
+      callback()
 
-handler.stdout.on 'data', (data) ->
-  console.log "Hook handler stdout:", data.toString()
+  terminateHandler: (callback) ->
+    start = Date.now()
+    console.log 'Sending SIGTERM to the handler'
+    @handler.kill 'SIGTERM'
 
-handler.stderr.on 'data', (data) ->
-  console.log "Hook handler stderr:", data.toString()
-
-handler.on 'close', (status) ->
-  console.log "Hook handler closed with status: #{status}"
-  if status? and status != 0
-    hooks.processExit 2
-
-handler.on 'error', (error) ->
-  console.log error
-
-# Wait before connecting to a handler
-# Hack for blocking sleep, loading of hooks in dredd is not async
-# TODO Move connecting to handler to async beforeAll hook
-now = new Date().getTime()
-while new Date().getTime() < now + 1000
-  true
-
-handlerClient = net.connect port: HANDLER_PORT, host: HANDLER_HOST, () ->
-  # Do something when dredd starts
-  # message =
-  #   event: 'hooksInit'
-
-  # handler.write JSON.stringify message
-  # handler.write HANDLER_MESSAGE_DELIMITER
-
-handlerClient.on 'error', (error) ->
-  console.log 'Error connecting to the hook handler. Is the handler running?'
-  console.log error
-  hooks.processExit(3)
-
-handlerBuffer = ""
-
-handlerClient.on 'data', (data) ->
-  handlerBuffer += data.toString()
-  if data.toString().indexOf(HANDLER_MESSAGE_DELIMITER) > -1
-    splittedData = handlerBuffer.split(HANDLER_MESSAGE_DELIMITER)
-
-    # add last chunk to the buffer
-    handlerBuffer = splittedData.pop()
-
-    messages = []
-    for message in splittedData
-      messages.push JSON.parse message
-
-    for message in messages
-      if message.uuid?
-        emitter.emit message.uuid, message
+    waitForHandlerTermOrKill = () =>
+      if @handlerEnded == true
+        clearTimeout(timeout)
+        callback()
       else
-        console.log 'UUID not present in message: ', JSON.stringify(message, null ,2)
+        if (Date.now() - start) < TERM_TIMEOUT
+          console.log 'Sending SIGTERM to the handler'
+          @handler.kill 'SIGTERM'
+          timeout = setTimeout waitForHandlerTermOrKill, TERM_RETRY
+        else
+          console.log 'Killing the handler'
+          @handler.kill 'SIGKILL'
+          clearTimeout(timeout)
+          callback()
 
-# Wait before starting a test
-# Hack for blocking sleep, loading of hooks in dredd is not async
-# TODO Move connecting to handler to async beforeAll hook
-now = new Date().getTime()
-while new Date().getTime() < now + 1000
-  true
+    timeout = setTimeout waitForHandlerTermOrKill, TERM_RETRY
 
-hooks.beforeEach (transaction, callback) ->
-  # avoiding dependency on external module here.
-  uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+  disconnectFromHandler: () ->
+    @handlerClient.destroy()
 
-  # send transaction to the handler
-  message =
-    event: 'beforeEach'
-    uuid: uuid
-    data: transaction
+  setCommandAndcheckForExecutables: (callback) ->
+    # Select handler based on option, use option string as command if not match anything
+    if @language == 'ruby'
+      @handlerCommand = 'dredd-hooks-ruby'
+      unless which.which @handlerCommand
+        msg = """Ruby hooks handler server command not found: #{@handlerCommand}
+        Install ruby hooks handler by running:
+        $ gem install dredd_hooks"""
+        logger.log msg
 
-  handlerClient.write JSON.stringify message
-  handlerClient.write HANDLER_MESSAGE_DELIMITER
+        error = new Error msg
+        error.exitStatus = 1
 
-  # register event for the sent transaction
-  messageHandler = (receivedMessage) ->
-    clearTimeout timeout
-    # workaround for assigning transaction
-    # this does not work:
-    # transaction = receivedMessage.data
-    for key, value of receivedMessage.data
-      transaction[key] = value
+        @hooks.processExit 1
+        return callback(error)
+
+    else if @language == 'python'
+      @handlerCommand = 'dredd-hooks-python'
+      unless which.which @handlerCommand
+        msg = """Python hooks handler server command not found: #{@handlerCommand}
+              Install python hooks handler by running:
+              $ pip install dredd_hooks"""
+        logger.log msg
+
+        error = new Error msg
+        error.exitStatus = 1
+
+        @hooks.processExit 1
+        return callback(errors)
+
+    else if @language == 'nodejs'
+      msg = 'Hooks handler should not be used for nodejs. Use Dredds\' native node hooks instead'
+      logger.log msg
+
+      error = new Error msg
+      error.exitStatus = 1
+
+      @hooks.processExit 1
+      return callback(error)
+
+    else
+      @handlerCommand = @language
+      unless which.which @handlerCommand
+        msg = "Hooks handler server command not found: #{@handlerCommand}"
+
+        error = new Error msg
+        error.exitStatus = 1
+
+        logger.log msg
+
+        @hooks.processExit 1
+        return callback(error)
     callback()
 
-  handleTimeout = () ->
-    transaction.fail = 'Hook timed out.'
-    emitter.removeListener uuid, messageHandler
+  spawnHandler: (callback) ->
+
+    pathGlobs = [].concat @hooks?.configuration?.options?.hookfiles
+
+    @handler = spawn @handlerCommand, pathGlobs
+
+    logger.log "Spawning `#{@language}` hooks handler"
+
+    @handler.stdout.on 'data', (data) ->
+      console.log data.toString()
+      logger.log "Hook handler stdout:", data.toString()
+
+    @handler.stderr.on 'data', (data) ->
+      console.log data.toString()
+      logger.log "Hook handler stderr:", data.toString()
+
+    @handler.on 'close', (status) =>
+      console.log 'handler ended'
+      @handlerEnded = true
+
+      if status? and status != 0
+
+        msg = "Hook handler closed with status: #{status}"
+
+        logger.log msg
+
+        error = new Error msg
+        error.exitStatus = 2
+
+        @hooks.processExit 2
+
+    @handler.on 'error', (error) ->
+      @handlerEnded = error
+      callback error
+
     callback()
 
-  # set timeout for the hook
-  timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+  connectToHandler: (callback) ->
+    start = Date.now()
+    console.log 'connecting to the handler'
 
-  emitter.on uuid, messageHandler
+    waitForConnect = () =>
+      if (Date.now() - start) < CONNECT_TIMEOUT
+        console.log CONNECT_RETRY
 
-hooks.beforeEachValidation (transaction, callback) ->
-  # avoiding dependency on external module here.
-  uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+        clearTimeout(timeout)
 
-  # send transaction to the handler
-  message =
-    event: 'beforeEachValidation'
-    uuid: uuid
-    data: transaction
+        if @connectError != false
+          console.log 'Reconnecting to the handler'
+          @connectError = false
 
-  handlerClient.write JSON.stringify message
-  handlerClient.write HANDLER_MESSAGE_DELIMITER
+          connectAndSetupClient()
 
-  # register event for the sent transaction
-  messageHandler = (receivedMessage) ->
-    clearTimeout timeout
-    # workaround for assigning transaction
-    # this does not work:
-    # transaction = receivedMessage.data
-    for key, value of receivedMessage.data
-      transaction[key] = value
+        timeout = setTimeout waitForConnect, CONNECT_RETRY
+      else
+        msg = "Connect timeout #{CONNECT_TIMEOUT} to the hadler exceeded."
+
+        error = new Error msg
+        error.exitStatus = 3
+
+        logger.log msg
+
+        @handlerClient.destroy()
+
+        clearTimeout(timeout)
+        callback(error)
+
+    connectAndSetupClient = () =>
+
+      @handlerClient = net.connect port: HANDLER_PORT, host: HANDLER_HOST
+
+      @handlerClient.on 'connect', () =>
+        @clientConnected = true
+        console.log 'client connected'
+        clearTimeout(timeout)
+        callback()
+
+      @handlerClient.on 'close', () ->
+        console.log 'client socket closed'
+
+      @handlerClient.on 'error', (connectError) =>
+        console.log 'connect error'
+        console.log connectError
+
+        @connectError = connectError
+
+        msg = 'Error connecting to the hook handler. Is the handler running? Retrying...'
+        logger.log msg
+
+        # error = new Error msg
+        # error.exitStatus = 3
+
+        @hooks.processExit(3)
+
+      handlerBuffer = ""
+
+      @handlerClient.on 'data', (data) =>
+        handlerBuffer += data.toString()
+        if data.toString().indexOf(HANDLER_MESSAGE_DELIMITER) > -1
+          splittedData = handlerBuffer.split(HANDLER_MESSAGE_DELIMITER)
+
+          # add last chunk to the buffer
+          handlerBuffer = splittedData.pop()
+
+          messages = []
+          for message in splittedData
+            messages.push JSON.parse message
+
+          for message in messages
+            if message.uuid?
+              @emitter.emit message.uuid, message
+            else
+              logger.log 'UUID not present in message: ', JSON.stringify(message, null ,2)
+
+    connectAndSetupClient()
+    timeout = setTimeout waitForConnect, CONNECT_RETRY
+
+  registerHooks: (callback) ->
+    @hooks.beforeEach (transaction, hookCallback) ->
+      # avoiding dependency on external module here.
+      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+
+      # send transaction to the handler
+      message =
+        event: 'beforeEach'
+        uuid: uuid
+        data: transaction
+
+      @handlerClient.write JSON.stringify message
+      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+
+      # register event for the sent transaction
+      messageHandler = (receivedMessage) ->
+        clearTimeout timeout
+        # workaround for assigning transaction
+        # this does not work:
+        # transaction = receivedMessage.data
+        for key, value of receivedMessage.data
+          transaction[key] = value
+        hookCallback()
+
+      handleTimeout = () ->
+        transaction.fail = 'Hook timed out.'
+        @emitter.removeListener uuid, messageHandler
+        hookCallback()
+
+      # set timeout for the hook
+      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+
+      @emitter.on uuid, messageHandler
+
+    @hooks.beforeEachValidation (transaction, hookCallback) ->
+      # avoiding dependency on external module here.
+      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+
+      # send transaction to the handler
+      message =
+        event: 'beforeEachValidation'
+        uuid: uuid
+        data: transaction
+
+      @handlerClient.write JSON.stringify message
+      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+
+      # register event for the sent transaction
+      messageHandler = (receivedMessage) ->
+        clearTimeout timeout
+        # workaround for assigning transaction
+        # this does not work:
+        # transaction = receivedMessage.data
+        for key, value of receivedMessage.data
+          transaction[key] = value
+        hookCallback()
+
+      handleTimeout = () ->
+        transaction.fail = 'Hook timed out.'
+        @emitter.removeListener uuid, messageHandler
+        hookCallback()
+
+      # set timeout for the hook
+      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+
+      @emitter.on uuid, messageHandler
+
+
+    @hooks.afterEach (transaction, hookCallback) ->
+      # avoiding dependency on external module here.
+      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+
+      # send transaction to the handler
+      message =
+        event: 'afterEach'
+        uuid: uuid
+        data: transaction
+
+      @handlerClient.write JSON.stringify message
+      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+
+      # register event for the sent transaction
+      messageHandler = (receivedMessage) ->
+        clearTimeout timeout
+        # workaround for assigning transaction
+        # this does not work:
+        # transaction = receivedMessage.data
+        for key, value of receivedMessage.data
+          transaction[key] = value
+        hookCallback()
+
+      handleTimeout = () ->
+        transaction.fail = 'Hook timed out.'
+        @emitter.removeListener uuid, messageHandler
+        hookCallback()
+
+      # set timeout for the hook
+      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+
+      @emitter.on uuid, messageHandler
+
+    @hooks.beforeAll (transactions, hookCallback) ->
+      # avoiding dependency on external module here.
+      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+
+      # send transaction to the handler
+      message =
+        event: 'beforeAll'
+        uuid: uuid
+        data: transactions
+
+      @handlerClient.write JSON.stringify message
+      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+
+      # register event for the sent transaction
+      messageHandler = (receivedMessage) ->
+        clearTimeout timeout
+        # workaround for assigning transaction
+        # this does not work:
+        # transaction = receivedMessage.data
+        for value, index in receivedMessage.data
+          transactions[index] = value
+        hookCallback()
+
+      handleTimeout = () ->
+        logger.log 'Hook timed out.'
+        @emitter.removeListener uuid, messageHandler
+        hookCallback()
+
+      # set timeout for the hook
+      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+
+      @emitter.on uuid, messageHandler
+
+    @hooks.afterAll (transactions, hookCallback) ->
+      # avoiding dependency on external module here.
+      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+
+      # send transaction to the handler
+      message =
+        event: 'afterAll'
+        uuid: uuid
+        data: transactions
+
+      @handlerClient.write JSON.stringify message
+      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+
+      # register event for the sent transaction
+      messageHandler = (receivedMessage) ->
+        clearTimeout timeout
+        # workaround for assigning transaction
+        # this does not work:
+        # transaction = receivedMessage.data
+        for value, index in receivedMessage.data
+          transactions[index] = value
+        hookCallback()
+
+      handleTimeout = () ->
+        logger.log 'Hook timed out.'
+        @emitter.removeListener uuid, messageHandler
+        hookCallback()
+
+      # set timeout for the hook
+      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+
+      @emitter.on uuid, messageHandler
+
+
+    @hooks.afterAll (transactions, hookCallback) ->
+
+      # Kill the handler server
+      @handler.kill 'SIGKILL'
+
+      # This is needed to for transaction modification integration tests.
+      if process.env['TEST_DREDD_HOOKS_HANDLER_ORDER'] == "true"
+        logger.log 'FOR TESTING ONLY'
+        for mod, index in transactions[0]['hooks_modifications']
+          logger.log "#{index} #{mod}"
+        logger.log 'FOR TESTING ONLY'
+      hookCallback()
+
     callback()
 
-  handleTimeout = () ->
-    transaction.fail = 'Hook timed out.'
-    emitter.removeListener uuid, messageHandler
-    callback()
-
-  # set timeout for the hook
-  timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-  emitter.on uuid, messageHandler
-
-
-hooks.afterEach (transaction, callback) ->
-  # avoiding dependency on external module here.
-  uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
-
-  # send transaction to the handler
-  message =
-    event: 'afterEach'
-    uuid: uuid
-    data: transaction
-
-  handlerClient.write JSON.stringify message
-  handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-  # register event for the sent transaction
-  messageHandler = (receivedMessage) ->
-    clearTimeout timeout
-    # workaround for assigning transaction
-    # this does not work:
-    # transaction = receivedMessage.data
-    for key, value of receivedMessage.data
-      transaction[key] = value
-    callback()
-
-  handleTimeout = () ->
-    transaction.fail = 'Hook timed out.'
-    emitter.removeListener uuid, messageHandler
-    callback()
-
-  # set timeout for the hook
-  timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-  emitter.on uuid, messageHandler
-
-hooks.beforeAll (transactions, callback) ->
-  # avoiding dependency on external module here.
-  uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
-
-  # send transaction to the handler
-  message =
-    event: 'beforeAll'
-    uuid: uuid
-    data: transactions
-
-  handlerClient.write JSON.stringify message
-  handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-  # register event for the sent transaction
-  messageHandler = (receivedMessage) ->
-    clearTimeout timeout
-    # workaround for assigning transaction
-    # this does not work:
-    # transaction = receivedMessage.data
-    for value, index in receivedMessage.data
-      transactions[index] = value
-    callback()
-
-  handleTimeout = () ->
-    console.log 'Hook timed out.'
-    emitter.removeListener uuid, messageHandler
-    callback()
-
-  # set timeout for the hook
-  timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-  emitter.on uuid, messageHandler
-
-hooks.afterAll (transactions, callback) ->
-  # avoiding dependency on external module here.
-  uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
-
-  # send transaction to the handler
-  message =
-    event: 'afterAll'
-    uuid: uuid
-    data: transactions
-
-  handlerClient.write JSON.stringify message
-  handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-  # register event for the sent transaction
-  messageHandler = (receivedMessage) ->
-    clearTimeout timeout
-    # workaround for assigning transaction
-    # this does not work:
-    # transaction = receivedMessage.data
-    for value, index in receivedMessage.data
-      transactions[index] = value
-    callback()
-
-  handleTimeout = () ->
-    console.log 'Hook timed out.'
-    emitter.removeListener uuid, messageHandler
-    callback()
-
-  # set timeout for the hook
-  timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-  emitter.on uuid, messageHandler
-
-
-hooks.afterAll (transactions, callback) ->
-
-  # Kill the handler server
-  handler.kill 'SIGKILL'
-
-  # This is needed to for transaction modification integration tests.
-  if process.env['TEST_DREDD_HOOKS_HANDLER_ORDER'] == "true"
-    console.log 'FOR TESTING ONLY'
-    for mod, index in transactions[0]['hooks_modifications']
-      console.log "#{index} #{mod}"
-    console.log 'FOR TESTING ONLY'
-  callback()
+module.exports = HooksWorkerClient

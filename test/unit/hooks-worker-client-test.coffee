@@ -6,7 +6,7 @@ net = require 'net'
 clone = require 'clone'
 
 childProcessStub = require 'child_process'
-consoleStub = require 'console'
+loggerStub = require '../../src/logger'
 whichStub =  require '../../src/which'
 
 Hooks = require '../../src/hooks'
@@ -15,16 +15,24 @@ PORT = 61321
 
 hooks = null
 
-loadWorkerClient = () ->
-  proxyquire '../../src/hooks-worker-client', {
-    'child_process': childProcessStub
-    'hooks': hooks
-    'console': consoleStub
-    './which': whichStub
-  }
+HooksWorkerClient = proxyquire '../../src/hooks-worker-client', {
+  'child_process': childProcessStub
+  './logger': loggerStub
+  './which': whichStub
+}
+
+hooksWorkerClient = null
+
+loadWorkerClient = (callback) ->
+  hooksWorkerClient = new HooksWorkerClient(hooks)
+  hooksWorkerClient.start callback
+
 
 describe 'Hooks worker client', () ->
+  logs = null
+
   beforeEach () ->
+    logs = []
     hooks = new Hooks(logs: [], logger: console)
 
     sinon.stub hooks, 'processExit'
@@ -32,43 +40,53 @@ describe 'Hooks worker client', () ->
     hooks.configuration =
       options: {}
 
+    sinon.stub loggerStub, 'log', (msg1, msg2) ->
+      text = msg1
+      text += " " + msg2 if msg2
+      logs.push text
+      process.stdout.write text
+
+  afterEach () ->
+    loggerStub.log.restore()
+
   describe "when it's loaded", () ->
+    beforeEach () ->
+      sinon.stub HooksWorkerClient.prototype, 'disconnectFromHandler'
+      sinon.stub HooksWorkerClient.prototype, 'connectToHandler', (cb) ->
+        cb()
+
+    afterEach () ->
+      HooksWorkerClient.prototype.disconnectFromHandler.restore()
+      HooksWorkerClient.prototype.connectToHandler.restore()
 
     it 'should pipe spawned process stderr to the Dredd process stderr', (done) ->
-      logs = []
-      sinon.stub consoleStub, 'log', (msg1, msg2) ->
-        logs.push msg1 + " " + msg2
-        process.stdout.write msg1 + " " + msg2 + "\n"
       hooks.configuration.options.language = './test/fixtures/scripts/stderr.sh'
-      loadWorkerClient()
+      loadWorkerClient (err) ->
+        assert.isNotUndefined err
 
-      setTimeout () ->
-        consoleStub.log.restore()
-        assert.include logs, "Hook handler stderr: error output text\n"
-        done()
-      , 2200
+        hooksWorkerClient.stop () ->
+          assert.include logs, "Hook handler stderr: error output text\n"
+          done()
 
     it 'should pipe spawned process stdout to the Dredd process stdout', (done) ->
-      logs = []
-      sinon.stub consoleStub, 'log', (msg1, msg2) ->
-        logs.push msg1 + " " + msg2
-        process.stdout.write msg1 + " " + msg2 + "\n"
       hooks.configuration.options.language = './test/fixtures/scripts/stdout.sh'
-      loadWorkerClient()
-      setTimeout () ->
-        consoleStub.log.restore()
-        assert.include logs, "Hook handler stdout: standard output text\n"
-        done()
-      , 2200
+      loadWorkerClient (err)->
+        assert.isNotUndefineds err
 
-    it 'should exit Dredd with status > 1 when spawned process ends with exit status 2', (done) ->
+        hooksWorkerClient.stop () ->
+          assert.include logs, "Hook handler stdout: standard output text\n"
+          done()
+
+    it.only 'should exit Dredd with status > 1 when spawned process ends with exit status 2', (done) ->
       hooks.processExit.reset()
       hooks.configuration.options.language = './test/fixtures/scripts/exit_3.sh'
-      loadWorkerClient()
-      setTimeout () ->
-        assert.equal hooks.processExit.getCall(0).args[0], 2
-        done()
-      , 2200
+      loadWorkerClient (err)->
+        assert.isDefined err
+        console.log err
+
+        hooksWorkerClient.stop () ->
+          assert.equal err.exitStatus, 2
+          done()
 
     describe 'when --language ruby option is given', () ->
       beforeEach ->
@@ -108,15 +126,15 @@ describe 'Hooks worker client', () ->
           , 2200
 
         it 'should write a hint how to install', (done) ->
-          sinon.stub consoleStub, 'log'
+          sinon.stub loggerStub, 'log'
           sinon.stub whichStub, 'which', (command) -> false
           loadWorkerClient()
           setTimeout () ->
             logs = []
-            for args in consoleStub.log.args
+            for args in loggerStub.log.args
               logs.push args.join(" ")
 
-            consoleStub.log.restore()
+            loggerStub.log.restore()
             whichStub.which.restore()
 
             assert.include logs.join(", "), "gem install dredd_hooks"
@@ -161,15 +179,15 @@ describe 'Hooks worker client', () ->
           , 2200
 
         it 'should write a hint how to install', (done) ->
-          sinon.stub consoleStub, 'log'
+          sinon.stub loggerStub, 'log'
           sinon.stub whichStub, 'which', (command) -> false
           loadWorkerClient()
           setTimeout () ->
             logs = []
-            for args in consoleStub.log.args
+            for args in loggerStub.log.args
               logs.push args.join(" ")
 
-            consoleStub.log.restore()
+            loggerStub.log.restore()
             whichStub.which.restore()
 
             assert.include logs.join(", "), "pip install dredd_hooks"
