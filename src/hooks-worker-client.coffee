@@ -1,12 +1,12 @@
 net = require 'net'
-EventEmitter = require('events').EventEmitter
 
-child_process = require('child_process')
+{EventEmitter} = require 'events'
+child_process = require 'child_process'
+
 spawn = child_process.spawn
 
 # for stubbing in tests
 logger = require './logger'
-
 which = require './which'
 
 HOOK_TIMEOUT = 5000
@@ -23,36 +23,24 @@ HANDLER_MESSAGE_DELIMITER = "\n"
 
 
 class HooksWorkerClient
-  constructor: (@hooks) ->
-    @emitter = new EventEmitter
+  constructor: (@hooks, @emitter) ->
     @language = @hooks?.configuration?.options?.language
     @clientConnected = false
     @handlerEnded = false
     @connectError = false
 
   start: (callback) ->
-    console.log 1
-    @setCommandAndcheckForExecutables (executablesError) =>
+    @setCommandAndCheckForExecutables (executablesError) =>
       return callback(executablesError) if executablesError
-
-      console.log 2
 
       @spawnHandler (spawnHandlerError) =>
         return callback(spawnHandlerError) if spawnHandlerError
 
-        console.log 3
-        # Wait before connecting to a handler
-
         @connectToHandler (connectHandlerError) =>
           return callback(connectHandlerError) if connectHandlerError
 
-          console.log 4
-          # Wait before starting a test
-
           @registerHooks (registerHooksError) =>
             return callback(registerHooksError) if registerHooksError
-
-            console.log 5
             callback()
 
   stop: (callback) ->
@@ -85,7 +73,7 @@ class HooksWorkerClient
   disconnectFromHandler: () ->
     @handlerClient.destroy()
 
-  setCommandAndcheckForExecutables: (callback) ->
+  setCommandAndCheckForExecutables: (callback) ->
     # Select handler based on option, use option string as command if not match anything
     if @language == 'ruby'
       @handlerCommand = 'dredd-hooks-ruby'
@@ -98,7 +86,6 @@ class HooksWorkerClient
         error = new Error msg
         error.exitStatus = 1
 
-        @hooks.processExit 1
         return callback(error)
 
     else if @language == 'python'
@@ -112,8 +99,7 @@ class HooksWorkerClient
         error = new Error msg
         error.exitStatus = 1
 
-        @hooks.processExit 1
-        return callback(errors)
+        return callback(error)
 
     else if @language == 'nodejs'
       msg = 'Hooks handler should not be used for nodejs. Use Dredds\' native node hooks instead'
@@ -122,7 +108,6 @@ class HooksWorkerClient
       error = new Error msg
       error.exitStatus = 1
 
-      @hooks.processExit 1
       return callback(error)
 
     else
@@ -135,7 +120,6 @@ class HooksWorkerClient
 
         logger.log msg
 
-        @hooks.processExit 1
         return callback(error)
     callback()
 
@@ -143,36 +127,35 @@ class HooksWorkerClient
 
     pathGlobs = [].concat @hooks?.configuration?.options?.hookfiles
 
-    @handler = spawn @handlerCommand, pathGlobs
+    @handler = child_process.spawn @handlerCommand, pathGlobs
 
+    console.log 'spawing'
     logger.log "Spawning `#{@language}` hooks handler"
 
     @handler.stdout.on 'data', (data) ->
+      console.log 'stdout'
       console.log data.toString()
       logger.log "Hook handler stdout:", data.toString()
 
     @handler.stderr.on 'data', (data) ->
+      console.log 'stderr'
       console.log data.toString()
       logger.log "Hook handler stderr:", data.toString()
 
     @handler.on 'close', (status) =>
-      console.log 'handler ended'
       @handlerEnded = true
 
       if status? and status != 0
 
         msg = "Hook handler closed with status: #{status}"
-
-        logger.log msg
-
         error = new Error msg
         error.exitStatus = 2
 
-        @hooks.processExit 2
+        @emitter.emit 'fatalError', error
 
-    @handler.on 'error', (error) ->
+    @handler.on 'error', (error) =>
       @handlerEnded = error
-      callback error
+      @emitter.emit 'fatalError', error
 
     callback()
 
@@ -212,24 +195,17 @@ class HooksWorkerClient
 
       @handlerClient.on 'connect', () =>
         @clientConnected = true
-        console.log 'client connected'
         clearTimeout(timeout)
         callback()
 
       @handlerClient.on 'close', () ->
-        console.log 'client socket closed'
 
       @handlerClient.on 'error', (connectError) =>
-        console.log 'connect error'
-        console.log connectError
 
         @connectError = connectError
 
         msg = 'Error connecting to the hook handler. Is the handler running? Retrying...'
         logger.log msg
-
-        # error = new Error msg
-        # error.exitStatus = 3
 
         @hooks.processExit(3)
 
