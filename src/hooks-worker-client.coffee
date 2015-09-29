@@ -13,6 +13,7 @@ HOOK_TIMEOUT = 5000
 
 CONNECT_TIMEOUT = 1000
 CONNECT_RETRY = 500
+AFTER_CONNECT_WAIT = 100
 
 TERM_TIMEOUT = 5000
 TERM_RETRY = 500
@@ -50,7 +51,7 @@ class HooksWorkerClient
 
   terminateHandler: (callback) ->
     start = Date.now()
-    console.log 'Sending SIGTERM to the handler'
+    logger.log 'Sending SIGTERM to the hooks handler'
     @handler.kill 'SIGTERM'
 
     waitForHandlerTermOrKill = () =>
@@ -59,11 +60,11 @@ class HooksWorkerClient
         callback()
       else
         if (Date.now() - start) < TERM_TIMEOUT
-          console.log 'Sending SIGTERM to the handler'
+          logger.log 'Sending SIGTERM to the hooks handler'
           @handler.kill 'SIGTERM'
           timeout = setTimeout waitForHandlerTermOrKill, TERM_RETRY
         else
-          console.log 'Killing the handler'
+          logger.log 'Killing the hooks handler'
           @handler.kill 'SIGKILL'
           clearTimeout(timeout)
           callback()
@@ -129,17 +130,12 @@ class HooksWorkerClient
 
     @handler = child_process.spawn @handlerCommand, pathGlobs
 
-    console.log 'spawing'
     logger.log "Spawning `#{@language}` hooks handler"
 
     @handler.stdout.on 'data', (data) ->
-      console.log 'stdout'
-      console.log data.toString()
       logger.log "Hook handler stdout:", data.toString()
 
     @handler.stderr.on 'data', (data) ->
-      console.log 'stderr'
-      console.log data.toString()
       logger.log "Hook handler stderr:", data.toString()
 
     @handler.on 'close', (status) =>
@@ -161,8 +157,6 @@ class HooksWorkerClient
 
   connectToHandler: (callback) ->
     start = Date.now()
-    console.log 'connecting to the handler'
-
     waitForConnect = () =>
       if (Date.now() - start) < CONNECT_TIMEOUT
         console.log CONNECT_RETRY
@@ -170,7 +164,7 @@ class HooksWorkerClient
         clearTimeout(timeout)
 
         if @connectError != false
-          console.log 'Reconnecting to the handler'
+          logger.log 'Error connecting to the hooks handler server, reconnecting...'
           @connectError = false
 
           connectAndSetupClient()
@@ -196,7 +190,7 @@ class HooksWorkerClient
       @handlerClient.on 'connect', () =>
         @clientConnected = true
         clearTimeout(timeout)
-        callback()
+        setTimeout callback, AFTER_CONNECT_WAIT
 
       @handlerClient.on 'close', () ->
 
@@ -233,174 +227,86 @@ class HooksWorkerClient
     timeout = setTimeout waitForConnect, CONNECT_RETRY
 
   registerHooks: (callback) ->
-    @hooks.beforeEach (transaction, hookCallback) ->
-      # avoiding dependency on external module here.
-      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+    eachHookNames = [
+      'beforeEach'
+      'beforeEachValidation'
+      'afterEach'
+    ]
 
-      # send transaction to the handler
-      message =
-        event: 'beforeEach'
-        uuid: uuid
-        data: transaction
+    for name in eachHookNames then do (name) =>
+      @hooks[name] (transaction, hookCallback) =>
+        # avoiding dependency on external module here.
+        uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
 
-      @handlerClient.write JSON.stringify message
-      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+        # send transaction to the handler
+        message =
+          event: name
+          uuid: uuid
+          data: transaction
 
-      # register event for the sent transaction
-      messageHandler = (receivedMessage) ->
-        clearTimeout timeout
-        # workaround for assigning transaction
-        # this does not work:
-        # transaction = receivedMessage.data
-        for key, value of receivedMessage.data
-          transaction[key] = value
-        hookCallback()
+        @handlerClient.write JSON.stringify message
+        @handlerClient.write HANDLER_MESSAGE_DELIMITER
 
-      handleTimeout = () ->
-        transaction.fail = 'Hook timed out.'
-        @emitter.removeListener uuid, messageHandler
-        hookCallback()
+        # register event for the sent transaction
+        messageHandler = (receivedMessage) =>
+          clearTimeout timeout
+          # workaround for assigning transaction
+          # this does not work:
+          # transaction = receivedMessage.data
+          for key, value of receivedMessage.data
+            transaction[key] = value
+          hookCallback()
 
-      # set timeout for the hook
-      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+        handleTimeout = () =>
+          transaction.fail = 'Hook timed out.'
+          @emitter.removeListener uuid, messageHandler
+          hookCallback()
 
-      @emitter.on uuid, messageHandler
+        # set timeout for the hook
+        timeout = setTimeout handleTimeout, HOOK_TIMEOUT
 
-    @hooks.beforeEachValidation (transaction, hookCallback) ->
-      # avoiding dependency on external module here.
-      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+        @emitter.on uuid, messageHandler
 
-      # send transaction to the handler
-      message =
-        event: 'beforeEachValidation'
-        uuid: uuid
-        data: transaction
+    allHookNames = [
+      'beforeAll'
+      'afterAll'
+    ]
 
-      @handlerClient.write JSON.stringify message
-      @handlerClient.write HANDLER_MESSAGE_DELIMITER
+    for name in allHookNames then do (name) =>
+      @hooks[name] (transactions, hookCallback) =>
+        # avoiding dependency on external module here.
+        uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
 
-      # register event for the sent transaction
-      messageHandler = (receivedMessage) ->
-        clearTimeout timeout
-        # workaround for assigning transaction
-        # this does not work:
-        # transaction = receivedMessage.data
-        for key, value of receivedMessage.data
-          transaction[key] = value
-        hookCallback()
+        # send transaction to the handler
+        message =
+          event: name
+          uuid: uuid
+          data: transactions
 
-      handleTimeout = () ->
-        transaction.fail = 'Hook timed out.'
-        @emitter.removeListener uuid, messageHandler
-        hookCallback()
+        @handlerClient.write JSON.stringify message
+        @handlerClient.write HANDLER_MESSAGE_DELIMITER
 
-      # set timeout for the hook
-      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
+        # register event for the sent transaction
+        messageHandler = (receivedMessage) =>
+          clearTimeout timeout
+          # workaround for assigning transaction
+          # this does not work:
+          # transaction = receivedMessage.data
+          for value, index in receivedMessage.data
+            transactions[index] = value
+          hookCallback()
 
-      @emitter.on uuid, messageHandler
+        handleTimeout = () =>
+          logger.log 'Hook timed out.'
+          @emitter.removeListener uuid, messageHandler
+          hookCallback()
 
+        # set timeout for the hook
+        timeout = setTimeout handleTimeout, HOOK_TIMEOUT
 
-    @hooks.afterEach (transaction, hookCallback) ->
-      # avoiding dependency on external module here.
-      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
+        @emitter.on uuid, messageHandler
 
-      # send transaction to the handler
-      message =
-        event: 'afterEach'
-        uuid: uuid
-        data: transaction
-
-      @handlerClient.write JSON.stringify message
-      @handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-      # register event for the sent transaction
-      messageHandler = (receivedMessage) ->
-        clearTimeout timeout
-        # workaround for assigning transaction
-        # this does not work:
-        # transaction = receivedMessage.data
-        for key, value of receivedMessage.data
-          transaction[key] = value
-        hookCallback()
-
-      handleTimeout = () ->
-        transaction.fail = 'Hook timed out.'
-        @emitter.removeListener uuid, messageHandler
-        hookCallback()
-
-      # set timeout for the hook
-      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-      @emitter.on uuid, messageHandler
-
-    @hooks.beforeAll (transactions, hookCallback) ->
-      # avoiding dependency on external module here.
-      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
-
-      # send transaction to the handler
-      message =
-        event: 'beforeAll'
-        uuid: uuid
-        data: transactions
-
-      @handlerClient.write JSON.stringify message
-      @handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-      # register event for the sent transaction
-      messageHandler = (receivedMessage) ->
-        clearTimeout timeout
-        # workaround for assigning transaction
-        # this does not work:
-        # transaction = receivedMessage.data
-        for value, index in receivedMessage.data
-          transactions[index] = value
-        hookCallback()
-
-      handleTimeout = () ->
-        logger.log 'Hook timed out.'
-        @emitter.removeListener uuid, messageHandler
-        hookCallback()
-
-      # set timeout for the hook
-      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-      @emitter.on uuid, messageHandler
-
-    @hooks.afterAll (transactions, hookCallback) ->
-      # avoiding dependency on external module here.
-      uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
-
-      # send transaction to the handler
-      message =
-        event: 'afterAll'
-        uuid: uuid
-        data: transactions
-
-      @handlerClient.write JSON.stringify message
-      @handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-      # register event for the sent transaction
-      messageHandler = (receivedMessage) ->
-        clearTimeout timeout
-        # workaround for assigning transaction
-        # this does not work:
-        # transaction = receivedMessage.data
-        for value, index in receivedMessage.data
-          transactions[index] = value
-        hookCallback()
-
-      handleTimeout = () ->
-        logger.log 'Hook timed out.'
-        @emitter.removeListener uuid, messageHandler
-        hookCallback()
-
-      # set timeout for the hook
-      timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-      @emitter.on uuid, messageHandler
-
-
-    @hooks.afterAll (transactions, hookCallback) ->
+    @hooks.afterAll (transactions, hookCallback) =>
 
       # Kill the handler server
       @handler.kill 'SIGKILL'

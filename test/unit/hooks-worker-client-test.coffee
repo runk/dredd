@@ -30,7 +30,7 @@ loadWorkerClient = (callback) ->
   hooksWorkerClient = new HooksWorkerClient(hooks, emitter)
   hooksWorkerClient.start callback
 
-describe 'Hooks worker client', () ->
+describe.only 'Hooks worker client', () ->
   beforeEach () ->
     logs = []
 
@@ -49,7 +49,7 @@ describe 'Hooks worker client', () ->
   afterEach () ->
     loggerStub.log.restore()
 
-  describe.only "when connecting is disabled", () ->
+  describe "when connecting is disabled", () ->
     beforeEach () ->
       sinon.stub HooksWorkerClient.prototype, 'disconnectFromHandler'
       sinon.stub HooksWorkerClient.prototype, 'connectToHandler', (cb) ->
@@ -64,20 +64,28 @@ describe 'Hooks worker client', () ->
       loadWorkerClient (err)->
         assert.isUndefined err
 
-        hooksWorkerClient.stop () ->
-          console.log 'logs', logs
-          assert.include logs, "Hook handler stdout: standard output text\n"
-          done()
+        # Race condition workaround
+        # Spawned process doesn't write to stdout before is terminated
+        setTimeout () ->
+          hooksWorkerClient.stop () ->
+            console.log 'logs', logs
+            assert.include logs, "Hook handler stdout: standard output text\n"
+            done()
+        , 500
 
     it 'should pipe spawned process stderr to the Dredd process stderr', (done) ->
       hooks.configuration.options.language = './test/fixtures/scripts/stderr.sh'
       loadWorkerClient (err) ->
         assert.isUndefined err
 
-        hooksWorkerClient.stop () ->
-          console.log 'logs', logs
-          assert.include logs, "Hook handler stderr: error output text\n"
-          done()
+        # Race condition workaround
+        # Spawned process doesn't write to stderr before is terminated
+        setTimeout () ->
+          hooksWorkerClient.stop () ->
+            console.log 'logs', logs
+            assert.include logs, "Hook handler stderr: error output text\n"
+            done()
+        , 500
 
     it 'should exit Dredd with status > 1 when spawned process ends with exit status 2', (done) ->
       hooks.configuration.options.language = './test/fixtures/scripts/exit_3.sh'
@@ -298,7 +306,10 @@ describe 'Hooks worker client', () ->
 
         loadWorkerClient (err) ->
           assert.isUndefined err
-          done()
+
+          hooksWorkerClient.stop (err) ->
+            assert.isUndefined err
+            done()
 
 
       afterEach ->
@@ -321,139 +332,144 @@ describe 'Hooks worker client', () ->
           hookFuncs = hooks["#{eventType}Hooks"]
           assert.isAbove hookFuncs.length, 0
 
-  # describe 'when server is running', () ->
-  #   server = null
-  #   receivedData = null
-  #   transaction = null
-  #   connected = null
-  #   currentSocket = null
-  #   sentData = null
+  describe 'when server is running', () ->
+    server = null
+    receivedData = ""
+    transaction = null
+    connected = null
+    currentSocket = null
+    sentData = ""
 
-  #   beforeEach () ->
-  #     receivedData = ""
+    beforeEach () ->
+      receivedData = ""
 
-  #     transaction =
-  #       key: "value"
+      transaction =
+        key: "value"
 
-  #     server = net.createServer()
-  #     server.on 'connection', (socket) ->
-  #       currentSocket = socket
-  #       connected = true
-  #       socket.on 'data', (data) ->
-  #         receivedData += data.toString()
-  #     server.listen PORT
+      server = net.createServer()
+      server.on 'connection', (socket) ->
+        currentSocket = socket
+        connected = true
+        socket.on 'data', (data) ->
+          receivedData += data.toString()
+      server.listen PORT
 
-  #   afterEach ->
-  #     server.close()
-
-
-  #   it 'should connect to the server', (done) ->
-  #     hooks.configuration.options.language = 'true'
-
-  #     loadWorkerClient()
-  #     setTimeout () ->
-  #       assert.isTrue connected
-  #       done()
-  #     , 2200
+    afterEach ->
+      server.close()
 
 
-  #   eventTypes = [
-  #     'beforeEach'
-  #     'beforeEachValidation'
-  #     'afterEach'
-  #     'beforeAll'
-  #     'afterAll'
-  #   ]
+    it 'should connect to the server', (done) ->
+      hooks.configuration.options.language = 'true'
 
-  #   for eventType in eventTypes then do (eventType) ->
-  #     describe "when '#{eventType}' hook function is triggered", () ->
+      loadWorkerClient (err) ->
+        assert.isUndefined err
 
-  #       if eventType.indexOf("All") > -1
-  #         beforeEach (done) ->
-  #           hooks.configuration.options.language = 'true'
-  #           loadWorkerClient()
-  #           sentData = clone [transaction]
-  #           setTimeout () ->
-  #             hooks["#{eventType}Hooks"][0] sentData, () ->
-  #             done()
-  #           , 2200
-  #       else
-  #         beforeEach (done) ->
-  #           hooks.configuration.options.language = 'true'
-  #           loadWorkerClient()
-  #           sentData = clone transaction
-  #           setTimeout () ->
-  #             hooks["#{eventType}Hooks"][0] sentData, () ->
-  #             done()
-  #           , 2200
+        hooksWorkerClient.stop (err) ->
+          assert.isTrue connected
+          assert.isUndefined err
+          done()
 
+    eventTypes = [
+      'beforeEach'
+      'beforeEachValidation'
+      'afterEach'
+      'beforeAll'
+      'afterAll'
+    ]
 
-  #       it 'should send a json to the socket ending with delimiter character', (done) ->
-  #         setTimeout () ->
-  #           assert.include receivedData, "\n"
-  #           assert.include receivedData, "{"
-  #           done()
-  #         , 200
+    for eventType in eventTypes then do (eventType) ->
+      describe "when '#{eventType}' hook function is triggered", () ->
 
-  #       describe 'sent object', () ->
-  #         receivedObject = null
+        if eventType.indexOf("All") > -1
+          beforeEach (done) ->
+            receivedData = ""
+            hooks.configuration.options.language = 'true'
+            sentData = clone [transaction]
+            loadWorkerClient (err) ->
+              assert.isUndefined err
+              hooks["#{eventType}Hooks"][0] sentData, () ->
+              done()
+        else
+          beforeEach (done) ->
+            receivedData = ""
+            hooks.configuration.options.language = 'true'
+            sentData = clone transaction
+            loadWorkerClient (err) ->
+              assert.isUndefined err
+              hooks["#{eventType}Hooks"][0] sentData, () ->
+              done()
 
-  #         beforeEach ->
-  #           receivedObject = JSON.parse receivedData.replace("\n","")
+        afterEach (done) ->
+          hooksWorkerClient.stop (err) ->
+            assert.isUndefined err
+            done()
 
-  #         keys = [
-  #           'data'
-  #           'event'
-  #           'uuid'
-  #         ]
+        it 'should send a json to the socket ending with delimiter character', (done) ->
+          setTimeout () ->
+            assert.include receivedData, "\n"
+            assert.include receivedData, "{"
+            done()
+          , 200
 
-  #         for key in keys then do (key) ->
-  #           it "should contain key #{key}", () ->
-  #             assert.property receivedObject, key
+        describe 'sent object', () ->
+          receivedObject = null
 
-  #         it "key event should have value #{eventType}", () ->
-  #           assert.equal receivedObject['event'], eventType
+          beforeEach ->
+            receivedObject = JSON.parse receivedData.replace("\n","")
 
-  #         if eventType.indexOf("All") > -1
-  #           it "key data should contain array of transaction objects", () ->
-  #             assert.isArray receivedObject['data']
-  #             assert.propertyVal receivedObject['data'][0], 'key', 'value'
-  #         else
-  #           it "key data should contain the transaction object", () ->
-  #             assert.isObject receivedObject['data']
-  #             assert.propertyVal receivedObject['data'], 'key', 'value'
+          keys = [
+            'data'
+            'event'
+            'uuid'
+          ]
 
-  #       if eventType.indexOf("All") > -1
-  #         describe 'when server sends a response with matching uuid', () ->
-  #           beforeEach () ->
-  #             receivedObject = null
-  #             receivedObject = JSON.parse clone(receivedData).replace("\n","")
+          for key in keys then do (key) ->
+            it "should contain key #{key}", () ->
+              assert.property receivedObject, key
 
-  #             objectToSend = clone receivedObject
-  #             # *all events are handling array of transactions
-  #             objectToSend['data'][0]['key'] = "newValue"
-  #             message = JSON.stringify(objectToSend) + "\n"
-  #             currentSocket.write message
+          it "key event should have value #{eventType}", () ->
+            assert.equal receivedObject['event'], eventType
 
-  #           it 'should add data from the response to the transaction', (done) ->
-  #             setTimeout () ->
-  #               assert.equal sentData[0]['key'], 'newValue'
-  #               done()
-  #             , 200
-  #       else
-  #         describe 'when server sends a response with matching uuid', () ->
-  #           beforeEach () ->
-  #             receivedObject = null
-  #             receivedObject = JSON.parse clone(receivedData).replace("\n","")
+          if eventType.indexOf("All") > -1
+            it "key data should contain array of transaction objects", () ->
+              assert.isArray receivedObject['data']
+              assert.propertyVal receivedObject['data'][0], 'key', 'value'
+          else
+            it "key data should contain the transaction object", () ->
+              assert.isObject receivedObject['data']
+              assert.propertyVal receivedObject['data'], 'key', 'value'
 
-  #             objectToSend = clone receivedObject
-  #             objectToSend['data']['key'] = "newValue"
+        if eventType.indexOf("All") > -1
+          describe 'when server sends a response with matching uuid', () ->
+            beforeEach () ->
+              receivedObject = null
+              receivedObject = JSON.parse clone(receivedData).replace("\n","")
 
-  #             message = JSON.stringify(objectToSend) + "\n"
-  #             currentSocket.write message
+              objectToSend = clone receivedObject
+              # *all events are handling array of transactions
+              objectToSend['data'][0]['key'] = "newValue"
+              message = JSON.stringify(objectToSend) + "\n"
+              currentSocket.write message
 
-  #           it 'should add data from the response to the transaction', (done) ->
-  #             setTimeout () ->
-  #               assert.equal sentData['key'], 'newValue'
-  #               done()
-  #             , 200
+            it 'should add data from the response to the transaction', (done) ->
+              setTimeout () ->
+                assert.equal sentData[0]['key'], 'newValue'
+                done()
+              , 200
+        else
+          describe 'when server sends a response with matching uuid', () ->
+            beforeEach () ->
+              receivedObject = null
+              receivedObject = JSON.parse clone(receivedData).replace("\n","")
+
+              objectToSend = clone receivedObject
+              objectToSend['data']['key'] = "newValue"
+
+              message = JSON.stringify(objectToSend) + "\n"
+              currentSocket.write message
+
+            it 'should add data from the response to the transaction', (done) ->
+              setTimeout () ->
+                assert.equal sentData['key'], 'newValue'
+                done()
+              , 200

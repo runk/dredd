@@ -249,6 +249,23 @@ describe "Command line interface", () ->
       #['ECONNRESET', 'ENOTFOUND', 'ESOCKETTIMEDOUT', 'ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'EPIPE']
 
   describe "when called with arguments", () ->
+
+    describe 'when using language hook handler', () ->
+
+      describe 'and it crashes during execution', () ->
+        it 'should return with status 2', () ->
+          assert.ok false
+
+        it 'should term or kill the server', () ->
+          assert.ok false
+
+      describe "and it's killed during exectiuon", () ->
+        it 'should return with status 2', () ->
+          assert.ok false
+
+        it 'should term or kill the server', () ->
+          assert.ok false
+
     describe "when using reporter -r apiary", () ->
       server = null
       server2 = null
