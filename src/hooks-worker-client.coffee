@@ -231,57 +231,20 @@ class HooksWorkerClient
       'beforeEach'
       'beforeEachValidation'
       'afterEach'
-    ]
-
-    for name in eachHookNames then do (name) =>
-      @hooks[name] (transaction, hookCallback) =>
-        # avoiding dependency on external module here.
-        uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
-
-        # send transaction to the handler
-        message =
-          event: name
-          uuid: uuid
-          data: transaction
-
-        @handlerClient.write JSON.stringify message
-        @handlerClient.write HANDLER_MESSAGE_DELIMITER
-
-        # register event for the sent transaction
-        messageHandler = (receivedMessage) =>
-          clearTimeout timeout
-          # workaround for assigning transaction
-          # this does not work:
-          # transaction = receivedMessage.data
-          for key, value of receivedMessage.data
-            transaction[key] = value
-          hookCallback()
-
-        handleTimeout = () =>
-          transaction.fail = 'Hook timed out.'
-          @emitter.removeListener uuid, messageHandler
-          hookCallback()
-
-        # set timeout for the hook
-        timeout = setTimeout handleTimeout, HOOK_TIMEOUT
-
-        @emitter.on uuid, messageHandler
-
-    allHookNames = [
       'beforeAll'
       'afterAll'
     ]
 
-    for name in allHookNames then do (name) =>
-      @hooks[name] (transactions, hookCallback) =>
+    for eventName in eachHookNames then do (eventName) =>
+      @hooks[eventName] (data, hookCallback) =>
         # avoiding dependency on external module here.
         uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
 
         # send transaction to the handler
         message =
-          event: name
+          event: eventName
           uuid: uuid
-          data: transactions
+          data: data
 
         @handlerClient.write JSON.stringify message
         @handlerClient.write HANDLER_MESSAGE_DELIMITER
@@ -289,15 +252,28 @@ class HooksWorkerClient
         # register event for the sent transaction
         messageHandler = (receivedMessage) =>
           clearTimeout timeout
+
           # workaround for assigning transaction
           # this does not work:
           # transaction = receivedMessage.data
-          for value, index in receivedMessage.data
-            transactions[index] = value
+
+          # *All hoooks receive array of transactions
+          if eventName.indexOf("All") > -1
+            for value, index in receivedMessage.data
+              data[index] = value
+          # *Each hooks receive single transaction
+          else
+            for key, value of receivedMessage.data
+              data[key] = value
+
           hookCallback()
 
         handleTimeout = () =>
-          logger.log 'Hook timed out.'
+          if eventName.indexOf("All") > -1
+            logger.log 'Hook timed out.'
+          else
+            data.fail = 'Hook timed out.'
+
           @emitter.removeListener uuid, messageHandler
           hookCallback()
 
