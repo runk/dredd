@@ -284,16 +284,15 @@ class HooksWorkerClient
 
     @hooks.afterAll (transactions, hookCallback) =>
 
-      # Kill the handler server
-      @handler.kill 'SIGKILL'
-
       # This is needed to for transaction modification integration tests.
       if process.env['TEST_DREDD_HOOKS_HANDLER_ORDER'] == "true"
         logger.log 'FOR TESTING ONLY'
         for mod, index in transactions[0]['hooks_modifications']
           logger.log "#{index} #{mod}"
         logger.log 'FOR TESTING ONLY'
-      hookCallback()
+
+
+      @stop hookCallback
 
     callback()
 

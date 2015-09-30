@@ -10,6 +10,8 @@ Hooks = require './hooks'
 logger = require './logger'
 sandboxHooksCode = require './sandbox-hooks-code'
 mergeSandboxedHooks = require './merge-sandboxed-hooks'
+HooksWorkerClient = require './hooks-worker-client'
+
 
 addHooks = (runner, transactions, callback) ->
   # Note: runner.configuration.options must be defined
@@ -116,8 +118,10 @@ addHooks = (runner, transactions, callback) ->
     # If other language than nodejs, run (proxyquire) hooks worker client
     # Worker client will start the worker server and pass the "hookfiles" options as CLI arguments to it
     else
-      workerClientPath = path.resolve __dirname, './hooks-worker-client.js'
-      files = [workerClientPath]
+
+      hooksWorkerClient = new HooksWorkerClient(runner.hooks, runner.emitter)
+      hooksWorkerClient.start () ->
+        return callback()
 
     # Loading files in non sandboxed nodejs
     if not runner.configuration.options.sandbox == true

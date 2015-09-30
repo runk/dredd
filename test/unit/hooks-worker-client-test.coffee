@@ -30,7 +30,7 @@ loadWorkerClient = (callback) ->
   hooksWorkerClient = new HooksWorkerClient(hooks, emitter)
   hooksWorkerClient.start callback
 
-describe.only 'Hooks worker client', () ->
+describe 'Hooks worker client', () ->
   beforeEach () ->
     logs = []
 
@@ -68,7 +68,6 @@ describe.only 'Hooks worker client', () ->
         # Spawned process doesn't write to stdout before is terminated
         setTimeout () ->
           hooksWorkerClient.stop () ->
-            console.log 'logs', logs
             assert.include logs, "Hook handler stdout: standard output text\n"
             done()
         , 500
@@ -82,7 +81,6 @@ describe.only 'Hooks worker client', () ->
         # Spawned process doesn't write to stderr before is terminated
         setTimeout () ->
           hooksWorkerClient.stop () ->
-            console.log 'logs', logs
             assert.include logs, "Hook handler stderr: error output text\n"
             done()
         , 500
