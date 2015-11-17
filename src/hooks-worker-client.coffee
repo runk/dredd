@@ -24,11 +24,12 @@ HANDLER_MESSAGE_DELIMITER = "\n"
 
 
 class HooksWorkerClient
-  constructor: (@hooks, @emitter) ->
-    @language = @hooks?.configuration?.options?.language
+  constructor: (@runner) ->
+    @language = @runner.hooks?.configuration?.options?.language
     @clientConnected = false
     @handlerEnded = false
     @connectError = false
+    @emitter = new EventEmitter
 
   start: (callback) ->
     @setCommandAndCheckForExecutables (executablesError) =>
@@ -126,7 +127,7 @@ class HooksWorkerClient
 
   spawnHandler: (callback) ->
 
-    pathGlobs = [].concat @hooks?.configuration?.options?.hookfiles
+    pathGlobs = [].concat @runner.hooks?.configuration?.options?.hookfiles
 
     @handler = child_process.spawn @handlerCommand, pathGlobs
 
@@ -143,15 +144,15 @@ class HooksWorkerClient
 
       if status? and status != 0
 
-        msg = "Hook handler closed with status: #{status}"
+        msg = "Hook handler server closed with status: #{status}"
         error = new Error msg
         error.exitStatus = 2
 
-        @emitter.emit 'fatalError', error
+        @runner.hookHandlerError = error
 
     @handler.on 'error', (error) =>
-      @handlerEnded = error
-      @emitter.emit 'fatalError', error
+      @runner.hookHandlerError = @handlerEnded = error
+      error.exitStatus = 2
 
     callback()
 
@@ -201,7 +202,7 @@ class HooksWorkerClient
         msg = 'Error connecting to the hook handler. Is the handler running? Retrying...'
         logger.log msg
 
-        @hooks.processExit(3)
+        @runner.hooks.processExit(3)
 
       handlerBuffer = ""
 
@@ -236,7 +237,7 @@ class HooksWorkerClient
     ]
 
     for eventName in eachHookNames then do (eventName) =>
-      @hooks[eventName] (data, hookCallback) =>
+      @runner.hooks[eventName] (data, hookCallback) =>
         # avoiding dependency on external module here.
         uuid = Date.now().toString() + '-' + Math. random().toString(36).substring(7)
 
@@ -282,7 +283,7 @@ class HooksWorkerClient
 
         @emitter.on uuid, messageHandler
 
-    @hooks.afterAll (transactions, hookCallback) =>
+    @runner.hooks.afterAll (transactions, hookCallback) =>
 
       # This is needed to for transaction modification integration tests.
       if process.env['TEST_DREDD_HOOKS_HANDLER_ORDER'] == "true"

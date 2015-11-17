@@ -80,7 +80,7 @@ describe "DreddCommand class", () ->
   describe 'when initialized without "new" keyword', ->
     dc = null
     before ->
-      dc = DreddCommand()
+      dc = new DreddCommand
 
     it 'sets finished to false', ->
       assert.isFalse dc.finished
@@ -104,9 +104,9 @@ describe "DreddCommand class", () ->
     hasCalledExit = null
 
     before () ->
-      dc = DreddCommand({exit: (code) ->
+      dc = new DreddCommand {exit: (code) ->
         hasCalledExit = true
-      })
+      }
       dc.run()
 
     it 'has argv property set to object with properties from optimist', ->
@@ -353,8 +353,41 @@ describe "DreddCommand class", () ->
         passedConf = call.args[0]
         assert.propertyVal passedConf.options, 'names', true
 
+  describe 'exitWithStatus', () ->
+    describe 'when error with exitStatus is passed', () ->
+      it 'should exit with the exit from the error', () ->
+        exitSpy = sinon.spy()
 
+        dreddCommand = new DreddCommand {
+          exit: exitSpy
+          custom:
+            argv: ['./file.apib', 'http://localhost:3000']
+            env: {'NO_KEY': 'NO_VAL'}
+        }
 
+        error = new Error 'some error'
+        error.exitStatus = 3
+
+        stats =
+          tests: 0
+          failures: 0
+          errors: 0
+          passes: 0
+          skipped: 0
+          start: 0
+          end: 0
+          duration: 0
+
+        dreddCommand.exitWithStatus(error, stats)
+
+        assert.isTrue exitSpy.calledWith(3)
+
+  describe 'when the server and hooks handler is used', () ->
+    it 'should shut down the server', () ->
+      assert.ok false
+
+    it 'sohuld shut down the handler', () ->
+      assert.ok false
 
 
   # describe 'when using --server', () ->

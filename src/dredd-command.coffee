@@ -13,12 +13,10 @@ version = parsePackageJson path.join(__dirname, '../package.json')
 
 class DreddCommand
   constructor: (options = {}, @cb) ->
-    # support to call both 'new DreddCommand()' and/or 'DreddCommand()'
-    # without the "new" keyword
-    if not (@ instanceof DreddCommand)
-      return new DreddCommand(options, @cb)
-
+    @finished = false
     {@exit, @custom} = options
+
+    @setExitOrCallback()
 
     @custom ?= {}
 
@@ -27,8 +25,6 @@ class DreddCommand
 
     if not @custom.argv or not Array.isArray @custom.argv
       @custom.argv = []
-
-    @finished = false
 
   setOptimistArgv: ->
     @optimist = optimist(@custom['argv'], @custom['cwd'])
@@ -51,32 +47,34 @@ class DreddCommand
 
     @argv = @optimist.argv
 
+
+  # This thing-a-ma-bob here is only for purpose of testing
+  # It's basically a dependency injection for the process.exit function
   setExitOrCallback: ->
     if not @cb
       if @exit and (@exit is process.exit)
         @sigIntEventAdd = true
 
       if @exit
-        @_processExit = ((code) ->
+        @_processExit = (exitStatus) =>
           @finished = true
           @serverProcess.kill('SIGKILL') if @serverProcess?
-          @exit(code)
-        ).bind @
+          @exit(exitStatus)
+
       else
-        @_processExit = ((code) ->
+        @_processExit = (exitStatus) =>
           @serverProcess.kill('SIGKILL') if @serverProcess?
-          process.exit code
-        ).bind @
+          process.exit exitStatus
+
 
     else
-      @_processExit = ((code) ->
-
+      @_processExit = (exitStatus) =>
         @finished = true
         if @sigIntEventAdded
+          @serverProcess.kill('SIGKILL') if @serverProcess?
           process.removeEventListener 'SIGINT', @commandSigInt
-        @cb code
+        @cb exitStatus
         return @
-      ).bind @
 
   moveBlueprintArgToPath: () ->
     # transform path and p argument to array if it's not
@@ -192,7 +190,6 @@ class DreddCommand
   run: ->
     for task in [
       @setOptimistArgv
-      @setExitOrCallback
       @parseCustomConfig
       @runExitingActions
       @loadDreddFile
@@ -260,19 +257,25 @@ class DreddCommand
       process.on 'SIGINT', @commandSigInt
 
     dreddInstance.run (error, stats) =>
-      if error
-        if error.message
-          console.error error.message
-        if error.stack
-          console.error error.stack
-        return @_processExit(1)
-
-      if (stats.failures + stats.errors) > 0
-        @_processExit(1)
-      else
-        @_processExit(0)
-      return
+      @exitWithStatus(error, stats)
 
     return @
+
+  exitWithStatus: (error, stats) ->
+    if error
+      if error.message
+        console.error error.message
+      if error.stack
+        console.error error.stack
+      if error.exitStatus?
+        return @_processExit(error.exitStatus)
+      else
+        return @_processExit(1)
+
+    if (stats.failures + stats.errors) > 0
+      @_processExit(1)
+    else
+      @_processExit(0)
+    return
 
 exports = module.exports = DreddCommand

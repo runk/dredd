@@ -69,7 +69,7 @@ describe 'Dredd class', () ->
           sorted: true
           path: ['./test/fixtures/apiary.apib']
 
-    describe "when the 'fatalError' is emited to the emitter", () ->
+    describe "when the hook handler error happens", () ->
       it 'should call the callback', () ->
         assert.ok false
 
@@ -126,10 +126,6 @@ describe 'Dredd class', () ->
         assert.ok blueprintTransactionsStub.compile.called
         dredd.runner.executeTransaction.restore()
         done()
-
-    describe 'when fatal error is emitted', () ->
-      it 'should call the callback'
-      it 'should not execute any other transactions'
 
     describe 'when paths specified with glob paterns', () ->
       before () ->

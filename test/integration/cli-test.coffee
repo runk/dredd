@@ -4,6 +4,8 @@ express = require 'express'
 clone = require 'clone'
 bodyParser = require 'body-parser'
 fs = require 'fs'
+syncExec = require 'sync-exec'
+
 
 PORT = 8887
 CMD_PREFIX = ''
@@ -12,6 +14,10 @@ stderr = ''
 stdout = ''
 exitStatus = null
 requests = []
+
+isProcessRunning = (lookup) ->
+  result = syncExec "ps axu | grep #{lookup} | grep -v grep"
+  result.status == 0
 
 execCommand = (cmd, options = {}, callback) ->
   stderr = ''
@@ -250,21 +256,103 @@ describe "Command line interface", () ->
 
   describe "when called with arguments", () ->
 
-    describe 'when using language hook handler', () ->
+    describe 'when using language hook handler and spawning the server', () ->
 
-      describe 'and it crashes during execution', () ->
+      describe 'and handler crashes during execution', () ->
+
+        before (done) ->
+          serverCmd = "./test/fixtures/scripts/endless-nosigterm.sh"
+          languageCmd = "./test/fixtures/scritps/exit_3.sh"
+          cmd = "./bin/dredd ./test/fixtures/single-get.apib http://localhost:#{PORT} --no-color --server #{serverCmd} --language #{languageCmd}"
+          execCommand cmd, done
+
+
+        after () ->
+          syncExec "ps aux | grep test/fixtures/scripts/ | grep -v grep | awk '{print $2}' | xargs kill -9"
+
         it 'should return with status 2', () ->
-          assert.ok false
+          assert.equal exitStatus, 2
 
         it 'should term or kill the server', () ->
-          assert.ok false
+          assert.isFalse isProcessRunning("endless-nosigterm")
 
-      describe "and it's killed during exectiuon", () ->
+      describe "and handler is killed during exectiuon", () ->
+        apiHit = false
+
+        before (done) ->
+          serverCmd = "./test/fixtures/scripts/endless-nosigterm.sh"
+          languageCmd = "./test/fixtures/scritps/kill-self.sh"
+          cmd = "./bin/dredd ./test/fixtures/single-get.apib http://localhost:#{PORT} --no-color --server #{serverCmd} --language #{languageCmd}"
+
+          app = express()
+
+          app.get '/machines', (req, res) ->
+            apiHit = true
+
+            res.setHeader 'Content-Type', 'application/json'
+            machine =
+              type: 'bulldozer'
+              name: 'willy'
+            response = [machine]
+            res.status(200).send response
+
+          server = app.listen PORT, () ->
+            execCommand cmd, () ->
+              server.close()
+
+          server.on 'close', done
+
+        after () ->
+          syncExec "ps aux | grep test/fixtures/scripts/ | grep -v grep | awk '{print $2}' | xargs kill -9"
+
         it 'should return with status 2', () ->
-          assert.ok false
+          assert.equal exitStatus, 2
 
         it 'should term or kill the server', () ->
-          assert.ok false
+          assert.isFalse isProcessRunning("endless-nosigterm")
+
+        it 'should not execeute any transaction', () ->
+          assert.isFalse apiHit
+
+      describe "and handler didn't quit but everything tests were OK", () ->
+        apiHit = false
+
+        before (done) ->
+          serverCmd = "./test/fixtures/scripts/endless-nosigterm.sh dredd-fake-server"
+          languageCmd = "./test/fixtures/scritps/endless-nosigterm.sh dredd-fake-handler"
+          cmd = "./bin/dredd ./test/fixtures/single-get.apib http://localhost:#{PORT} --no-color --server '#{serverCmd}' --language '#{languageCmd}'"
+
+          app = express()
+
+          app.get '/machines', (req, res) ->
+            apiHit = true
+            res.setHeader 'Content-Type', 'application/json'
+            machine =
+              type: 'bulldozer'
+              name: 'willy'
+            response = [machine]
+            res.status(200).send response
+
+          server = app.listen PORT, () ->
+            execCommand cmd, () ->
+              server.close()
+
+          server.on 'close', done
+
+        after () ->
+          syncExec "ps aux | grep test/fixtures/scripts/ | grep -v grep | awk '{print $2}' | xargs kill -9"
+
+        it 'should return with status 0', () ->
+          assert.equal exitStatus, 0
+
+        it 'should kill the handler', () ->
+          assert.isFalse isProcessRunning "dredd-fake-handler"
+
+        it 'should kill the server', () ->
+          assert.isFalse isProcessRunning "dredd-fake-server"
+
+        it 'should execeute some transaction', () ->
+          assert.isTrue apiHit
 
     describe "when using reporter -r apiary", () ->
       server = null

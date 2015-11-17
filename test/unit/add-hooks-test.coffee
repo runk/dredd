@@ -88,7 +88,7 @@ describe 'addHooks(runner, transactions, callback)', () ->
         assert.ok globStub.sync.notCalled
         done()
 
-  describe.only 'with non `nodejs` language option', () ->
+  describe 'with non `nodejs` language option', () ->
     runner = null
 
     beforeEach ->
@@ -98,12 +98,15 @@ describe 'addHooks(runner, transactions, callback)', () ->
             language: 'ruby'
             hookfiles: './some/ruby/file.rb'
 
-    it 'should start the hooks worker client', (done) ->
       sinon.stub hooksWorkerClientStub.prototype, 'start', (cb) -> cb()
+
+    afterEach ->
+      hooksWorkerClientStub.prototype.start.restore()
+
+    it 'should start the hooks worker client', (done) ->
       addHooks runner, transactions, (err) ->
-        done err if err
-        #assert.isTrue hooksWorkerClientStub.prototype.start.called
-        hooksWorkerClientStub.prototype.start.restore()
+        return done err if err
+        assert.isTrue hooksWorkerClientStub.prototype.start.called
         done()
 
 

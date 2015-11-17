@@ -13,8 +13,7 @@ Hooks = require '../../src/hooks'
 
 PORT = 61321
 
-hooks = null
-emitter = null
+runner = null
 logs = null
 
 
@@ -24,20 +23,22 @@ HooksWorkerClient = proxyquire '../../src/hooks-worker-client', {
   './which': whichStub
 }
 
+TransactionRunner = require '../../src/transaction-runner'
+
 hooksWorkerClient = null
 
 loadWorkerClient = (callback) ->
-  hooksWorkerClient = new HooksWorkerClient(hooks, emitter)
+  hooksWorkerClient = new HooksWorkerClient(runner)
   hooksWorkerClient.start callback
 
 describe 'Hooks worker client', () ->
   beforeEach () ->
     logs = []
 
-    hooks = new Hooks(logs: [], logger: console)
-    emitter = new EventEmitter
+    runner = new TransactionRunner {}
+    runner.hooks = new Hooks(logs: [], logger: console)
 
-    hooks.configuration =
+    runner.hooks.configuration =
       options: {}
 
     sinon.stub loggerStub, 'log', (msg1, msg2) ->
@@ -49,7 +50,7 @@ describe 'Hooks worker client', () ->
   afterEach () ->
     loggerStub.log.restore()
 
-  describe "when connecting is disabled", () ->
+  describe "when connecting to the handler is stubed", () ->
     beforeEach () ->
       sinon.stub HooksWorkerClient.prototype, 'disconnectFromHandler'
       sinon.stub HooksWorkerClient.prototype, 'connectToHandler', (cb) ->
@@ -60,7 +61,7 @@ describe 'Hooks worker client', () ->
       HooksWorkerClient.prototype.connectToHandler.restore()
 
     it 'should pipe spawned process stdout to the Dredd process stdout', (done) ->
-      hooks.configuration.options.language = './test/fixtures/scripts/stdout.sh'
+      runner.hooks.configuration.options.language = './test/fixtures/scripts/stdout.sh'
       loadWorkerClient (err)->
         assert.isUndefined err
 
@@ -73,7 +74,7 @@ describe 'Hooks worker client', () ->
         , 500
 
     it 'should pipe spawned process stderr to the Dredd process stderr', (done) ->
-      hooks.configuration.options.language = './test/fixtures/scripts/stderr.sh'
+      runner.hooks.configuration.options.language = './test/fixtures/scripts/stderr.sh'
       loadWorkerClient (err) ->
         assert.isUndefined err
 
@@ -85,15 +86,29 @@ describe 'Hooks worker client', () ->
             done()
         , 500
 
-    it 'should exit Dredd with status > 1 when spawned process ends with exit status 2', (done) ->
-      hooks.configuration.options.language = './test/fixtures/scripts/exit_3.sh'
-      loadWorkerClient (err)->
+    it 'should not set the error on worker if process is killed because it' +
+    ' can be killed intentionally after all hooks execution', (done) ->
+      runner.hooks.configuration.options.language = './test/fixtures/scripts/kill-self.sh'
+      loadWorkerClient (workerError) ->
+        done workerError if workerError
 
-        emitter.on 'fatalError', (err) ->
-          assert.isDefined err
-          assert.include err.message, '3'
-          assert.equal err.exitStatus, 2
+        setTimeout () ->
+          assert.isNull runner.hookHandlerError
           done()
+        , 1000
+
+
+    it 'should exit Dredd with status > 1 when spawned process ends with exit status 2', (done) ->
+      runner.hooks.configuration.options.language = './test/fixtures/scripts/exit_3.sh'
+      loadWorkerClient (workerError) ->
+        done workerError if workerError
+
+        setTimeout () ->
+          assert.isDefined runner.hookHandlerError
+          assert.include runner.hookHandlerError.message, '3'
+          assert.equal runner.hookHandlerError.exitStatus, 2
+          done()
+        , 1000
 
     describe 'when --language ruby option is given and the worker is installed', () ->
       beforeEach ->
@@ -103,7 +118,7 @@ describe 'Hooks worker client', () ->
           emitter.stderr = new EventEmitter
           emitter
 
-        hooks['configuration'] =
+        runner.hooks['configuration'] =
           options:
             language: 'ruby'
             hookfiles: "somefile.rb"
@@ -118,7 +133,7 @@ describe 'Hooks worker client', () ->
       afterEach ->
         childProcessStub.spawn.restore()
 
-        hooks['configuration'] = undefined
+        runner.hooks['configuration'] = undefined
 
         HooksWorkerClient.prototype.setCommandAndCheckForExecutables.restore()
         HooksWorkerClient.prototype.terminateHandler.restore()
@@ -146,7 +161,7 @@ describe 'Hooks worker client', () ->
       beforeEach () ->
         sinon.stub whichStub, 'which', (command) -> false
 
-        hooks['configuration'] =
+        runner.hooks['configuration'] =
           options:
             language: 'ruby'
             hookfiles: "somefile.rb"
@@ -174,7 +189,7 @@ describe 'Hooks worker client', () ->
           emitter.stderr = new EventEmitter
           emitter
 
-        hooks['configuration'] =
+        runner.hooks['configuration'] =
           options:
             language: 'python'
             hookfiles: "somefile.py"
@@ -189,7 +204,7 @@ describe 'Hooks worker client', () ->
       afterEach ->
         childProcessStub.spawn.restore()
 
-        hooks['configuration'] = undefined
+        runner.hooks['configuration'] = undefined
 
         HooksWorkerClient.prototype.setCommandAndCheckForExecutables.restore()
         HooksWorkerClient.prototype.terminateHandler.restore()
@@ -217,7 +232,7 @@ describe 'Hooks worker client', () ->
       beforeEach () ->
         sinon.stub whichStub, 'which', (command) -> false
 
-        hooks['configuration'] =
+        runner.hooks['configuration'] =
           options:
             language: 'python'
             hookfiles: "somefile.py"
@@ -246,7 +261,7 @@ describe 'Hooks worker client', () ->
           emitter.stderr = new EventEmitter
           emitter
 
-        hooks['configuration'] =
+        runner.hooks['configuration'] =
           options:
             language: './my-fency-command'
             hookfiles: "someotherfile"
@@ -259,7 +274,7 @@ describe 'Hooks worker client', () ->
       afterEach ->
         childProcessStub.spawn.restore()
 
-        hooks['configuration'] = undefined
+        runner.hooks['configuration'] = undefined
 
         HooksWorkerClient.prototype.terminateHandler.restore()
         whichStub.which.restore()
@@ -286,7 +301,7 @@ describe 'Hooks worker client', () ->
     describe "after loading", () ->
       beforeEach (done) ->
 
-        hooks['configuration'] =
+        runner.hooks['configuration'] =
           options:
             language: 'ruby'
             hookfiles: "somefile.rb"
@@ -311,7 +326,7 @@ describe 'Hooks worker client', () ->
 
 
       afterEach ->
-        hooks['configuration'] = undefined
+        runner.hooks['configuration'] = undefined
 
         HooksWorkerClient.prototype.setCommandAndCheckForExecutables.restore()
         HooksWorkerClient.prototype.terminateHandler.restore()
@@ -327,7 +342,7 @@ describe 'Hooks worker client', () ->
 
       for eventType in eventTypes then do (eventType) ->
         it "should register hook function for hook type #{eventType}", () ->
-          hookFuncs = hooks["#{eventType}Hooks"]
+          hookFuncs = runner.hooks["#{eventType}Hooks"]
           assert.isAbove hookFuncs.length, 0
 
   describe 'when server is running', () ->
@@ -357,7 +372,7 @@ describe 'Hooks worker client', () ->
 
 
     it 'should connect to the server', (done) ->
-      hooks.configuration.options.language = 'true'
+      runner.hooks.configuration.options.language = 'true'
 
       loadWorkerClient (err) ->
         assert.isUndefined err
@@ -381,20 +396,20 @@ describe 'Hooks worker client', () ->
         if eventType.indexOf("All") > -1
           beforeEach (done) ->
             receivedData = ""
-            hooks.configuration.options.language = 'true'
+            runner.hooks.configuration.options.language = 'true'
             sentData = clone [transaction]
             loadWorkerClient (err) ->
               assert.isUndefined err
-              hooks["#{eventType}Hooks"][0] sentData, () ->
+              runner.hooks["#{eventType}Hooks"][0] sentData, () ->
               done()
         else
           beforeEach (done) ->
             receivedData = ""
-            hooks.configuration.options.language = 'true'
+            runner.hooks.configuration.options.language = 'true'
             sentData = clone transaction
             loadWorkerClient (err) ->
               assert.isUndefined err
-              hooks["#{eventType}Hooks"][0] sentData, () ->
+              runner.hooks["#{eventType}Hooks"][0] sentData, () ->
               done()
 
         afterEach (done) ->
