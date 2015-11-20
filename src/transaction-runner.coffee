@@ -442,6 +442,8 @@ class TransactionRunner
     else
       options =
         maxSeconds: Math.floor configuration.options.time / 1000
+        concurrency: configuration.options.concurrency
+
         url: "#{transaction.protocol}//#{transaction.host}:#{transaction.port}#{transaction.request.uri}"
         method: transaction.request.method
         headers: transaction.request.headers

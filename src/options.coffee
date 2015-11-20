@@ -133,6 +133,10 @@ options =
     description: "Time for benchmarking of each method, in ms"
     default: 5000
 
+  concurrency:
+    description: "How many clients to start in parallel"
+    default: 1
+
   help:
     description: "Show usage information.\n"
 
