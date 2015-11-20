@@ -125,6 +125,14 @@ options =
     description: "Additional blueprint paths or URLs. Can be used multiple times with glob pattern for paths."
     default: []
 
+  latency:
+    description: "Maximum allowed latency (mean), in ms"
+    default: 1000
+
+  time:
+    description: "Time for benchmarking of each method, in ms"
+    default: 5000
+
   help:
     description: "Show usage information.\n"
 

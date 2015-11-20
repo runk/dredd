@@ -7,6 +7,7 @@ chai = require 'chai'
 gavel = require 'gavel'
 async = require 'async'
 clone = require 'clone'
+loadtest = require 'loadtest'
 {Pitboss} = require 'pitboss-ng'
 
 flattenHeaders = require './flatten-headers'
@@ -439,105 +440,63 @@ class TransactionRunner
       transaction.skip = true
       return callback()
     else
-      buffer = ""
+      options =
+        maxSeconds: Math.floor configuration.options.time / 1000
+        url: "#{transaction.protocol}//#{transaction.host}:#{transaction.port}#{transaction.request.uri}"
+        method: transaction.request.method
+        headers: transaction.request.headers
+        body: transaction.request.body
 
-      handleRequest = (res) =>
-        res.on 'data', (chunk) ->
-          buffer = buffer + chunk
+      loadtest.loadTest options, (err, result) =>
+        if err
+          configuration.emitter.emit 'test error', error, test, ->
 
-        res.on 'error', (error) ->
-          if error
-            configuration.emitter.emit 'test error', error, test, () ->
-
-          return callback()
-
-        res.once 'end', =>
-
-          # The data models as used here must conform to Gavel.js
-          # as defined in `http-response.coffee`
-          real =
-            statusCode: res.statusCode
-            headers: res.headers
-            body: buffer
-
-          transaction['real'] = real
-
-          @runHooksForData hooks?.beforeEachValidationHooks, transaction, false, () =>
-            @runHooksForData hooks?.beforeValidationHooks[transaction.name], transaction, false, () =>
-              @validateTransaction test, transaction, callback
+        @validateBenchTransaction test, transaction, result, callback
 
 
-      transport = if transaction.protocol is 'https:' then https else http
-      if transaction.request['body'] and @isMultipart requestOptions
-        @replaceLineFeedInBody transaction, requestOptions
-
-      try
-        req = transport.request requestOptions, handleRequest
-
-        req.on 'error', (error) ->
-          configuration.emitter.emit 'test error', error, test, () ->
-          return callback()
-
-        req.write transaction.request['body'] if transaction.request['body'] != ''
-        req.end()
-      catch error
-        configuration.emitter.emit 'test error', error, test, () ->
-        return callback()
-
-  validateTransaction: (test, transaction, callback) ->
+  validateBenchTransaction: (test, transaction, result, callback) ->
     configuration = @configuration
+    {latency} = configuration.options
 
-    gavel.isValid transaction.real, transaction.expected, 'response', (isValidError, isValid) ->
-      if isValidError
-        configuration.emitter.emit 'test error', isValidError, test, () ->
+    test.start = test.start
+    test.title = transaction.id
+    test.actual = transaction.real
+    test.message = 'Benchmark test failed'
+    # test.expected = transaction.expected
+    test.expected = {}
+    test.request = transaction.request
 
-      test.start = test.start
-      test.title = transaction.id
-      test.actual = transaction.real
-      test.expected = transaction.expected
-      test.request = transaction.request
+    # Check for latency
+    isLatencyAcceptable = result.meanLatencyMs < latency
+    unless isLatencyAcceptable
+      test.expected.Latency = "Expected mean latency for request should be under (=<) #{latency}ms,
+        actual: #{result.meanLatencyMs}ms"
 
-      if isValid
-        test.status = "pass"
-      else
-        test.status = "fail"
+    # Check status codes
+    # (Ignoring server and user error codes if they are expected)
+    errorCodes = Object.keys(result.errorCodes).filter (statusCode) -> statusCode isnt transaction.expected.statusCode
+    isWithoutErrors = errorCodes.length is 0
+    unless isWithoutErrors
+      test.expected.ErrorCode = 'Server returned unexpected status code or crashed during request'
+      test.expected.ErrorCodeDetails = '\n'
+      for statusCode in errorCodes
+        test.expected.ErrorCodeDetails += "  Status code #{statusCode} x #{result.errorCodes[statusCode]} time(s)"
 
-      gavel.validate transaction.real, transaction.expected, 'response', (validateError, gavelResult) ->
-        if not isValidError and validateError
-          configuration.emitter.emit 'test error', validateError, test, () ->
+    isValid = isLatencyAcceptable and isWithoutErrors
 
-        message = ''
+    test.status = if isValid then "pass" else "fail"
+    test.valid = isValid
 
-        for own resultKey, data of gavelResult or {}
-          if resultKey isnt 'version'
-            for entityResult in data['results'] or []
-              message += resultKey + ": " + entityResult['message'] + "\n"
+    transaction['results'] ?= {}
+    test['results'] = transaction['results']
 
-        test['message'] = message
+    # Propagate test to after hooks
+    transaction['test'] = test
 
-        transaction['results'] ?= {}
+    unless test['valid']
+      configuration.emitter.emit 'test fail', test, () ->
 
-        for own key, value of gavelResult or {}
-          beforeResults = null
-          if transaction['results'][key]?['results']?
-            beforeResults = clone transaction['results'][key]['results']
-
-          transaction['results'][key] = value
-
-          if beforeResults?
-            transaction['results'][key]['results'] = transaction['results'][key]['results'].concat beforeResults
-
-        test['results'] = transaction['results']
-
-        test['valid'] = isValid
-
-        # propagate test to after hooks
-        transaction['test'] = test
-
-        if test['valid'] == false
-          configuration.emitter.emit 'test fail', test, () ->
-
-        return callback()
+    return callback()
 
   isMultipart: (requestOptions) ->
     caseInsensitiveRequestHeaders = {}

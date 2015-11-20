@@ -1,20 +1,19 @@
 {
-  "name": "dredd",
-  "version": "1.0.2",
-  "description": "API Blueprint testing tool",
+  "name": "dredd-bench",
+  "version": "0.2.0",
+  "description": "API Blueprint benchmarking tool",
   "main": "lib/dredd.js",
   "bin": {
-    "dredd": "bin/dredd"
+    "dredd-bench": "bin/dredd"
   },
   "scripts": {
-    "changelist": "github-changes -o apiaryio -r dredd --only-pulls --use-commit-body --file CHANGELOG-Generated.md -a",
     "pretest": "coffeelint ./src",
     "test": "scripts/test",
     "prepublish": "scripts/prepublish"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/apiaryio/dredd"
+    "url": "https://github.com/runk/dredd"
   },
   "dependencies": {
     "advisable": "~0.2.0",
@@ -31,6 +30,7 @@
     "inquirer": "^0.11.0",
     "js-yaml": "^3.2.7",
     "markdown-it": "^5.0.2",
+    "loadtest": "^1.3.0",
     "node-uuid": "~1.4.2",
     "optimist": "~0.6.1",
     "pitboss-ng": "^0.3.1",
@@ -70,6 +70,10 @@
     {
       "name": "Evan Cordell",
       "email": "cordell.evan@gmail.com"
+    },
+    {
+      "name": "Dmitry Shirokov",
+      "email": "deadrunk@gmail.com"
     }
   ],
   "license": "MIT"
