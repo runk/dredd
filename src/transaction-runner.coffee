@@ -469,7 +469,7 @@ class TransactionRunner
     test.request = transaction.request
 
     # Check for latency
-    isLatencyAcceptable = result.meanLatencyMs < latency
+    isLatencyAcceptable = result.meanLatencyMs <= latency
     unless isLatencyAcceptable
       test.expected.Latency = "Expected mean latency for request should be under (=<) #{latency}ms,
         actual: #{result.meanLatencyMs}ms"
