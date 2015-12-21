@@ -1,6 +1,6 @@
 {
   "name": "dredd-bench",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "API Blueprint benchmarking tool",
   "main": "lib/dredd.js",
   "bin": {
@@ -76,5 +76,8 @@
       "email": "deadrunk@gmail.com"
     }
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
 }
